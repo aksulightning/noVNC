@@ -52,6 +52,7 @@ const MOUSE_MOVE_DELAY = 17;
 
 // Wheel thresholds
 let WHEEL_LINE_HEIGHT = 19; // Pixels for one line step (on Windows)
+const WHEEL_STEP = 50;
 
 // Gesture thresholds
 const GESTURE_ZOOMSENS = 75;
@@ -123,6 +124,7 @@ export default class RFB extends EventTargetMixin {
         this._fbWidth = 0;
         this._fbHeight = 0;
         this._fbName = "";
+        this._isKasmServer = false;
         this._capabilities = { power: false };
         this._supportsFence = false;
         this._supportsContinuousUpdates = false;
@@ -2455,7 +2457,27 @@ export default class RFB extends EventTargetMixin {
         if (this._viewOnly) { return; } // View only, skip mouse events
 
         if (this._isPrimaryDisplay) {
-            RFB.messages.pointerEvent(this._sock, this._display.absX(x), this._display.absY(y), 0, dX, dY);
+            if (this._isKasmServer) {
+                RFB.messages.pointerEvent(this._sock, this._display.absX(x), this._display.absY(y), 0, dX, dY);
+                return;
+            }
+
+            this._accumulatedWheelDeltaX += dX;
+            this._accumulatedWheelDeltaY += dY;
+
+            if (Math.abs(this._accumulatedWheelDeltaX) >= WHEEL_STEP) {
+                const wheelButton = this._accumulatedWheelDeltaX < 0 ? 1 << 5 : 1 << 6;
+                RFB.messages.pointerEvent(this._sock, this._display.absX(x), this._display.absY(y), wheelButton);
+                RFB.messages.pointerEvent(this._sock, this._display.absX(x), this._display.absY(y), 0);
+                this._accumulatedWheelDeltaX = 0;
+            }
+
+            if (Math.abs(this._accumulatedWheelDeltaY) >= WHEEL_STEP) {
+                const wheelButton = this._accumulatedWheelDeltaY < 0 ? 1 << 3 : 1 << 4;
+                RFB.messages.pointerEvent(this._sock, this._display.absX(x), this._display.absY(y), wheelButton);
+                RFB.messages.pointerEvent(this._sock, this._display.absX(x), this._display.absY(y), 0);
+                this._accumulatedWheelDeltaY = 0;
+            }
         } else {
             this._proxyRFBMessage('scroll', [ x, y, dX, dY ]);
         }
@@ -2947,8 +2969,12 @@ export default class RFB extends EventTargetMixin {
     _negotiateStdVNCAuth() {
         if (this._sock.rQwait("auth challenge", 16)) { return false; }
 
-        // KasmVNC uses basic Auth, clear the VNC password, which is not used
-        this._rfbCredentials.password = "";
+        if (this._rfbCredentials.password === undefined) {
+            this.dispatchEvent(new CustomEvent(
+                "credentialsrequired",
+                { detail: { types: ["password"] } }));
+            return false;
+        }
 
         // TODO(directxman12): make genDES not require an Array
         const challenge = Array.prototype.slice.call(this._sock.rQshiftBytes(16));
@@ -3207,6 +3233,7 @@ export default class RFB extends EventTargetMixin {
         // we're past the point where we could backtrack, so it's safe to call this
         this._setDesktopName(name);
         this._resize(width, height);
+        this._isKasmServer = /kasm/i.test(name);
 
         if (!this._viewOnly) { this._keyboard.grab(); }
 
@@ -3218,7 +3245,9 @@ export default class RFB extends EventTargetMixin {
         }
 
         RFB.messages.pixelFormat(this._sock, this._fbDepth, true);
-        RFB.messages.videoEncodersRequest(this._sock, this.videoCodecs);
+        if (this._isKasmServer) {
+            RFB.messages.videoEncodersRequest(this._sock, this.videoCodecs);
+        }
         this._sendEncodings();
         RFB.messages.fbUpdateRequest(this._sock, false, 0, 0, this._fbWidth, this._fbHeight);
 
@@ -3265,13 +3294,10 @@ export default class RFB extends EventTargetMixin {
         } else {
             Log.Debug("Multiple displays detected, disabling copyrect encoding.");
         }
-        // Only supported with full depth support
-        if (this._fbDepth === 24) {
-            encs.push(encodings.encodingTight);
-            encs.push(encodings.encodingTightPNG);
-            encs.push(encodings.encodingHextile);
-            encs.push(encodings.encodingRRE);
-        }
+        encs.push(encodings.encodingTight);
+        encs.push(encodings.encodingTightPNG);
+        encs.push(encodings.encodingHextile);
+        encs.push(encodings.encodingRRE);
         encs.push(encodings.encodingRaw);
 
         // Psuedo-encoding settings
@@ -3286,34 +3312,39 @@ export default class RFB extends EventTargetMixin {
         encs.push(encodings.pseudoEncodingContinuousUpdates);
         encs.push(encodings.pseudoEncodingDesktopName);
         encs.push(encodings.pseudoEncodingExtendedClipboard);
-        encs.push(encodings.pseudoEncodingKasmDisconnectNotify);
+        if (this._isKasmServer) {
+            encs.push(encodings.pseudoEncodingKasmDisconnectNotify);
+        }
         if (this._hasWebp())
             encs.push(encodings.pseudoEncodingWEBP);
         if (this._enableQOI)
             encs.push(encodings.pseudoEncodingQOI);
 
-        // kasm settings; the server may be configured to ignore these
-        encs.push(encodings.pseudoEncodingJpegVideoQualityLevel0 + this.jpegVideoQuality);
-        encs.push(encodings.pseudoEncodingWebpVideoQualityLevel0 + this.webpVideoQuality);
-        encs.push(encodings.pseudoEncodingTreatLosslessLevel0 + this.treatLossless);
-        encs.push(encodings.pseudoEncodingDynamicQualityMinLevel0 + this.dynamicQualityMin);
-        encs.push(encodings.pseudoEncodingDynamicQualityMaxLevel0 + this.dynamicQualityMax);
-        encs.push(encodings.pseudoEncodingVideoAreaLevel1 + this.videoArea - 1);
-        encs.push(encodings.pseudoEncodingVideoTimeLevel0 + this.videoTime);
-        encs.push(encodings.pseudoEncodingVideoOutTimeLevel1 + this.videoOutTime - 1);
-        encs.push(encodings.pseudoEncodingVideoScalingLevel0 + this.videoScaling);
-        encs.push(encodings.pseudoEncodingFrameRateLevel10 + this.frameRate - 10);
-        encs.push(encodings.pseudoEncodingMaxVideoResolution);
+        if (this._isKasmServer) {
+            // kasm settings; the server may be configured to ignore these
+            encs.push(encodings.pseudoEncodingJpegVideoQualityLevel0 + this.jpegVideoQuality);
+            encs.push(encodings.pseudoEncodingWebpVideoQualityLevel0 + this.webpVideoQuality);
+            encs.push(encodings.pseudoEncodingTreatLosslessLevel0 + this.treatLossless);
+            encs.push(encodings.pseudoEncodingDynamicQualityMinLevel0 + this.dynamicQualityMin);
+            encs.push(encodings.pseudoEncodingDynamicQualityMaxLevel0 + this.dynamicQualityMax);
+            encs.push(encodings.pseudoEncodingVideoAreaLevel1 + this.videoArea - 1);
+            encs.push(encodings.pseudoEncodingVideoTimeLevel0 + this.videoTime);
+            encs.push(encodings.pseudoEncodingVideoOutTimeLevel1 + this.videoOutTime - 1);
+            encs.push(encodings.pseudoEncodingVideoScalingLevel0 + this.videoScaling);
+            encs.push(encodings.pseudoEncodingFrameRateLevel10 + this.frameRate - 10);
+            encs.push(encodings.pseudoEncodingMaxVideoResolution);
 
-        // Order is important: first options, then streaming mode
-        // encs.push(encodings.pseudoEncodingHardwareProfile0 + this.hwEncoderProfile);
-        encs.push(encodings.pseudoEncodingGOP1 + this.gop);
-        encs.push(encodings.pseudoEncodingStreamingVideoQualityLevel0 + this.videoStreamQuality);
-        encs.push(this.streamMode);
+            // Order is important: first options, then streaming mode
+            // encs.push(encodings.pseudoEncodingHardwareProfile0 + this.hwEncoderProfile);
+            encs.push(encodings.pseudoEncodingGOP1 + this.gop);
+            encs.push(encodings.pseudoEncodingStreamingVideoQualityLevel0 + this.videoStreamQuality);
+            encs.push(this.streamMode);
 
-	// preferBandwidth choses preset settings. Since we expose all the settings, let's not pass this
-        if (this.preferBandwidth) // must be last - server processes in reverse order
-            encs.push(encodings.pseudoEncodingPreferBandwidth);
+            // preferBandwidth choses preset settings. Since we expose all the settings, let's not pass this
+            if (this.preferBandwidth) { // must be last - server processes in reverse order
+                encs.push(encodings.pseudoEncodingPreferBandwidth);
+            }
+        }
 
         if (this._fbDepth === 24) {
             encs.push(encodings.pseudoEncodingVMwareCursor);
@@ -4611,7 +4642,7 @@ RFB.messages = {
         sock.flush();
     },
 
-    pointerEvent(sock, x, y, mask, dX = 0, dY = 0) {
+    pointerEvent(sock, x, y, mask, dX = null, dY = null) {
         const buff = sock._sQ;
         const offset = sock._sQlen;
 
@@ -4625,6 +4656,12 @@ RFB.messages = {
 
         buff[offset + 5] = y >> 8;
         buff[offset + 6] = y;
+
+        if (dX === null || dY === null) {
+            sock._sQlen += 7;
+            sock.flush();
+            return;
+        }
 
         buff[offset + 7] = dX >> 8;
         buff[offset + 8] = dX;

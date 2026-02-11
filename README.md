@@ -48,8 +48,25 @@ For a full listing of features and minimum browser version required for each bro
 
 ## Server Requirements
 
-KasmVNC is an absolute requirement. This fork of noVNC is explicitly modified to work with KasmVNC and breaks the RFB specification. It will not work with legacy VNC servers.
+KasmVNC is still the primary supported target, but this fork now includes compatibility logic for legacy RFB servers (for example x11vnc) when used through a WebSockets-to-TCP proxy such as websockify.
 
 ## Running noVNC
 
 KasmVNC has a built in web server and the web code is baked into KasmVNC. There are no instructions to provide, just install KasmVNC follow the instructions to configure and run it.
+
+### Connecting to legacy VNC servers (x11vnc, TigerVNC, etc.)
+
+Use a standard websockify bridge between noVNC and the legacy VNC TCP port:
+
+```bash
+# Example: expose x11vnc (:5900) as WebSocket endpoint :6080
+websockify --web /path/to/noVNC 6080 localhost:5900
+```
+
+Then connect with the noVNC client URL, for example:
+
+```text
+http://localhost:6080/vnc.html?host=localhost&port=6080
+```
+
+Authentication will use standard RFB negotiation (RFB 3.3/3.8 security flows), including traditional VNC password authentication when required by the server.

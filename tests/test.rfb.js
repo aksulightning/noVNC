@@ -1777,12 +1777,14 @@ describe('Remote Frame Buffer Protocol Client', function () {
                 beforeEach(function () {
                     sinon.spy(RFB.messages, "pixelFormat");
                     sinon.spy(RFB.messages, "clientEncodings");
+                    sinon.spy(RFB.messages, "videoEncodersRequest");
                     sinon.spy(RFB.messages, "fbUpdateRequest");
                 });
 
                 afterEach(function () {
                     RFB.messages.pixelFormat.restore();
                     RFB.messages.clientEncodings.restore();
+                    RFB.messages.videoEncodersRequest.restore();
                     RFB.messages.fbUpdateRequest.restore();
                 });
 
@@ -1811,11 +1813,26 @@ describe('Remote Frame Buffer Protocol Client', function () {
                     expect(RFB.messages.pixelFormat).to.have.been.calledWith(client._sock, 8, true);
                     expect(RFB.messages.pixelFormat).to.have.been.calledBefore(RFB.messages.clientEncodings);
                     expect(RFB.messages.clientEncodings).to.have.been.calledOnce;
-                    expect(RFB.messages.clientEncodings.getCall(0).args[1]).to.not.include(encodings.encodingTight);
-                    expect(RFB.messages.clientEncodings.getCall(0).args[1]).to.not.include(encodings.encodingHextile);
+                    expect(RFB.messages.clientEncodings.getCall(0).args[1]).to.include(encodings.encodingTight);
+                    expect(RFB.messages.clientEncodings.getCall(0).args[1]).to.include(encodings.encodingHextile);
+                    expect(RFB.messages.clientEncodings.getCall(0).args[1]).to.include(encodings.encodingRRE);
                     expect(RFB.messages.clientEncodings).to.have.been.calledBefore(RFB.messages.fbUpdateRequest);
                     expect(RFB.messages.fbUpdateRequest).to.have.been.calledOnce;
                     expect(RFB.messages.fbUpdateRequest).to.have.been.calledWith(client._sock, false, 0, 0, 27, 32);
+                });
+
+                it('should not send kasm specific encoder request for legacy servers', function () {
+                    sendServerInit({ width: 27, height: 32, name: "x11vnc" }, client);
+
+                    expect(RFB.messages.videoEncodersRequest).to.not.have.been.called;
+                    expect(RFB.messages.clientEncodings.getCall(0).args[1]).to.not.include(encodings.pseudoEncodingKasmDisconnectNotify);
+                });
+
+                it('should send kasm specific encoder request for kasm servers', function () {
+                    sendServerInit({ width: 27, height: 32, name: "KasmVNC" }, client);
+
+                    expect(RFB.messages.videoEncodersRequest).to.have.been.calledOnce;
+                    expect(RFB.messages.clientEncodings.getCall(0).args[1]).to.include(encodings.pseudoEncodingKasmDisconnectNotify);
                 });
             });
 
